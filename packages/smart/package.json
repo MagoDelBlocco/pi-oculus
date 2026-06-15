@@ -1,0 +1,26 @@
+{
+  "name": "oculus-smart",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Smart analysis layer for oculus — scoring, resolution tracking, autofix",
+  "main": "src/index.ts",
+  "types": "src/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc --watch",
+    "test": "vitest run",
+    "lint": "tsc --noEmit"
+  },
+  "dependencies": {
+    "oculus-native": "file:packages/native",
+    "oculus-rules": "file:packages/rules"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "vitest": "^2.0.0",
+    "typescript": "^5.0.0"
+  },
+  "files": [
+    "src/"
+  ]
+}

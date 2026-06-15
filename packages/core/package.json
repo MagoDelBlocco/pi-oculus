@@ -1,0 +1,33 @@
+{
+  "name": "oculus-core",
+  "version": "0.1.0",
+  "description": "Pi extension entry point — thin TypeScript layer wiring everything together",
+  "type": "module",
+  "main": "src/index.ts",
+  "types": "src/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc --watch",
+    "test": "vitest run",
+    "lint": "tsc --noEmit"
+  },
+  "dependencies": {
+    "oculus-native": "file:../native",
+    "oculus-rules": "file:../rules",
+    "oculus-smart": "file:../smart",
+    "oculus-lint": "file:../lint",
+    "oculus-view": "file:../view",
+    "@earendil-works/pi-coding-agent": "*"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "vitest": "^2.0.0",
+    "typescript": "^5.0.0"
+  },
+  "files": [
+    "src/"
+  ],
+  "pi": {
+    "extensions": ["./src/index.ts"]
+  }
+}

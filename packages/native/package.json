@@ -1,0 +1,27 @@
+{
+  "name": "oculus-native",
+  "version": "0.1.0",
+  "description": "C++ native addon for oculus — hot paths in native code",
+  "type": "module",
+  "main": "src/index.ts",
+  "types": "src/index.d.ts",
+  "scripts": {
+    "build": "node-gyp rebuild",
+    "watch": "node-gyp rebuild -- -j 8",
+    "clean": "node-gyp clean",
+    "test": "vitest run",
+    "lint": "tsc --noEmit"
+  },
+  "dependencies": {
+    "node-addon-api": "^8.8.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "vitest": "^2.0.0",
+    "typescript": "^5.0.0"
+  },
+  "files": [
+    "native/",
+    "src/"
+  ]
+}

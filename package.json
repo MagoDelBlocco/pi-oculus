@@ -1,0 +1,13 @@
+{
+  "name": "oculus",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "node-gyp -C packages/native rebuild",
+    "test": "vitest run --config vitest.config.js",
+    "typecheck": "for d in packages/core packages/native packages/lint packages/rules packages/smart packages/view; do (cd $d && npx tsc --noEmit) || exit 1; done"
+  }
+}
