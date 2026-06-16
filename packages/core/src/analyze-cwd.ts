@@ -11,7 +11,7 @@ import { resolve, extname } from "node:path";
 import { analyzeFile } from "../../native/src/native-bridge";
 import { runRulesFromMetrics } from "../../rules/src/index";
 import { runBuiltInAstRules } from "../../rules/src/tree-sitter";
-import { runSemanticAnalysis } from "../../rules/src/semantic";
+import { runSemanticDiagnostics } from "../../rules/src/semantic";
 import type { RuleMatch } from "../../rules/src/types";
 import { LinterRunner, type LintResult } from "../../lint/src/index";
 import { shouldSkipByPath, shouldSkipAnalysis } from "./guard";
@@ -119,7 +119,7 @@ function phaseAst(results: FileAnalysis[]): void {
 	}
 }
 
-/** Phase 1.75: Semantic analysis (type checkers). */
+/** Phase 1.75: Semantic analysis (type checkers + semgrep). */
 async function phaseSemantic(results: FileAnalysis[]): Promise<void> {
   const candidates = results
     .filter((r) => !r.error)
@@ -128,7 +128,7 @@ async function phaseSemantic(results: FileAnalysis[]): Promise<void> {
   if (candidates.length === 0) return;
 
   try {
-    const semanticResults = await runSemanticAnalysis(candidates);
+    const semanticResults = await runSemanticDiagnostics(candidates);
     for (const r of results) {
       const diags = semanticResults.get(r.filePath);
       if (diags && diags.length > 0) {

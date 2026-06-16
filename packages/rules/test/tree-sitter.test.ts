@@ -32,7 +32,7 @@ try {
 // All tree-sitter tests — skipped as a group when unavailable.
 // ---------------------------------------------------------------------------
 
-describe.skip(!treeSitterAvailable)("runBuiltInAstRules (tree-sitter)", () => {
+describe.skipIf(!treeSitterAvailable)("runBuiltInAstRules (tree-sitter)", () => {
   // --- Unused Imports ---
 
   it("detects unused named imports", () => {
@@ -167,7 +167,7 @@ const z = -1;
   });
 });
 
-describe.skip(!treeSitterAvailable)("runAstQuery (raw query runner)", () => {
+describe.skipIf(!treeSitterAvailable)("runAstQuery (raw query runner)", () => {
   it("returns matches for a valid query", () => {
     const matches = runAstQuery(
       "test.ts",
@@ -217,7 +217,7 @@ describe.skip(!treeSitterAvailable)("runAstQuery (raw query runner)", () => {
   });
 });
 
-describe.skip(!treeSitterAvailable)("runTreeSitterRules (config-driven)", () => {
+describe.skipIf(!treeSitterAvailable)("runTreeSitterRules (config-driven)", () => {
   it("runs custom rule definitions", async () => {
     const matches = await runTreeSitterRules(
       "test.ts",

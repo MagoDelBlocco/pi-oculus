@@ -11,9 +11,6 @@ interface UiLike {
 	theme: ThemeLike;
 }
 
-/** Separator matching guardrails footer style. */
-const SEPARATOR = "│";
-
 export function updateOculusStatus(
 	state: EngineState,
 	ui: UiLike | null | undefined,
@@ -28,7 +25,7 @@ export function updateOculusStatus(
 				? { label: "oculus: major", color: "error" as const, bg: "toolErrorBg" as const }
 				: { label: "oculus: minor", color: "warning" as const, bg: "toolPendingBg" as const };
 
-	// Match mcp-client styling: state-specific background + color-coded foreground.
-	const styled = `${SEPARATOR} ${ui.theme.bg(bg, ui.theme.fg(color, label))}`;
+	// State-specific background + color-coded foreground.
+	const styled = ui.theme.bg(bg, ui.theme.fg(color, label));
 	ui.setStatus("oculus", styled);
 }

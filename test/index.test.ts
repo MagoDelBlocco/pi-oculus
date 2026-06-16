@@ -25,8 +25,8 @@ import type {
 } from "../packages/core/src/types";
 
 vi.mock("../packages/view/src/index", () => ({
-	createIssueTracker: () => ({ add: vi.fn() }),
-	setupWidget: vi.fn(),
+	// setupWidget returns the `update` callback the engine wires to state changes.
+	setupWidget: vi.fn(() => vi.fn()),
 }));
 
 beforeEach(() => {
@@ -952,7 +952,7 @@ describe("updateOculusStatus", () => {
 		updateOculusStatus(createState(), ui);
 		expect(ui.setStatus).toHaveBeenCalledWith(
 			"oculus",
-			"│ [bg:customMessageBg][fg:accent]oculus: clean[fg:off][bg:off]",
+			"[bg:toolSuccessBg][fg:success]oculus: clean[fg:off][bg:off]",
 		);
 	});
 
@@ -963,7 +963,7 @@ describe("updateOculusStatus", () => {
 		updateOculusStatus(state, ui);
 		expect(ui.setStatus).toHaveBeenCalledWith(
 			"oculus",
-			"│ [bg:customMessageBg][fg:accent]oculus: major[fg:off][bg:off]",
+			"[bg:toolErrorBg][fg:error]oculus: major[fg:off][bg:off]",
 		);
 	});
 
@@ -974,7 +974,7 @@ describe("updateOculusStatus", () => {
 		updateOculusStatus(state, ui);
 		expect(ui.setStatus).toHaveBeenCalledWith(
 			"oculus",
-			"│ [bg:customMessageBg][fg:accent]oculus: minor[fg:off][bg:off]",
+			"[bg:toolPendingBg][fg:warning]oculus: minor[fg:off][bg:off]",
 		);
 	});
 

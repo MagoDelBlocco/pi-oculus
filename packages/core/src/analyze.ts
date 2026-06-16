@@ -12,7 +12,14 @@ import { shouldSkipAnalysis, shouldSkipByPath } from "./guard";
 const ENTROPY_THRESHOLD = 6.5;
 const NESTING_THRESHOLD = 6;
 const NESTING_ERROR_THRESHOLD = 10;
-const OCULUS_SOURCE_PREFIX = "oculus-";
+/**
+ * Sources owned by the per-edit native analysis pass. Resolution here is scoped
+ * to these so it never clobbers AST (`oculus-ast`) or semantic
+ * (`oculus-semantic`) diagnostics — those are owned by the turn_end passes and
+ * resolve themselves. A broad `oculus-` prefix would wrongly resolve them on
+ * every edit, since this pass never re-emits their ids.
+ */
+const ANALYZE_OWNED_SOURCES = new Set(["oculus-native", "oculus-rules"]);
 
 /**
  * Analyze every changed file with diff awareness:
@@ -190,7 +197,7 @@ function resolveDisappeared(
 	for (const record of state.diagnostics.values()) {
 		if (record.diagnostic.filePath !== filePath) continue;
 		if (record.status === "resolved") continue;
-		if (!record.diagnostic.source.startsWith(OCULUS_SOURCE_PREFIX)) continue;
+		if (!ANALYZE_OWNED_SOURCES.has(record.diagnostic.source)) continue;
 		if (currentIds.has(record.id)) continue;
 		state.markResolved(record.id);
 	}

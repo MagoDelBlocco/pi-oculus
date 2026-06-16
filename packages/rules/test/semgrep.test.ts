@@ -1,11 +1,16 @@
 import { describe, it, expect } from "vitest";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 import {
   runSemgrep,
   runSemgrepOnDir,
   runSemgrepAnalysis,
   isSemgrepAvailable,
+  loadSemgrepConfig,
   DEFAULT_SEMGREP_CONFIG,
 } from "../src/semantic/semgrep";
+import { runSemanticDiagnostics } from "../src/semantic";
 
 describe("semgrep integration", () => {
   describe("isSemgrepAvailable", () => {
@@ -61,6 +66,51 @@ describe("semgrep integration", () => {
       const result = runSemgrepAnalysis([]);
       expect(result.length).toBe(0);
     });
+  });
+});
+
+describe("loadSemgrepConfig", () => {
+  it("returns defaults when no config file is present", () => {
+    const dir = mkdtempSync(join(tmpdir(), "oculus-cfg-"));
+    try {
+      expect(loadSemgrepConfig(dir)).toEqual(DEFAULT_SEMGREP_CONFIG);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("merges the semgrep key from .pi/oculus.json over defaults", () => {
+    const dir = mkdtempSync(join(tmpdir(), "oculus-cfg-"));
+    try {
+      const piDir = join(dir, ".pi");
+      mkdirSync(piDir, { recursive: true });
+      writeFileSync(
+        join(piDir, "oculus.json"),
+        JSON.stringify({ semgrep: { enabled: false, rules: "p/ci" } }),
+      );
+      const cfg = loadSemgrepConfig(dir);
+      expect(cfg.enabled).toBe(false);
+      expect(cfg.rules).toBe("p/ci");
+      // Untouched defaults survive the merge.
+      expect(cfg.args).toEqual(DEFAULT_SEMGREP_CONFIG.args);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("runSemanticDiagnostics (type checkers + semgrep)", () => {
+  it("returns a Map and is a no-op-safe merge for empty input", async () => {
+    const result = await runSemanticDiagnostics([]);
+    expect(result instanceof Map).toBe(true);
+    expect(result.size).toBe(0);
+  });
+
+  it("does not crash and returns a Map for real files", async () => {
+    const result = await runSemanticDiagnostics([
+      { path: "example.ts", content: "const x: number = 1;" },
+    ]);
+    expect(result instanceof Map).toBe(true);
   });
 });
 

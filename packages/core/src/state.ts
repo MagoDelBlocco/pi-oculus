@@ -67,7 +67,7 @@ export class EngineState {
 		this.resolvedSinceLastReport.delete(record.id);
 		this.diagnostics.set(record.id, record);
 		this.evictIfOverCap();
-		for (const fn of this.listeners) fn(record);
+		this.notify(record);
 	}
 
 	private evictIfOverCap(): void {
@@ -87,6 +87,9 @@ export class EngineState {
 		if (!rec || rec.status === "resolved") return;
 		rec.status = "resolved";
 		this.resolvedSinceLastReport.add(id);
+		// Notify so the widget/status bar reflect the resolution, not just new
+		// diagnostics. Without this, a turn that only fixes issues never repaints.
+		this.notify(rec);
 	}
 
 	subscribe(fn: Listener): () => void {
@@ -94,6 +97,10 @@ export class EngineState {
 		return () => {
 			this.listeners = this.listeners.filter((l) => l !== fn);
 		};
+	}
+
+	private notify(record: DiagnosticRecord): void {
+		for (const fn of this.listeners) fn(record);
 	}
 
 	reset(): void {

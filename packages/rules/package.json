@@ -2,7 +2,7 @@
   "name": "oculus-rules",
   "version": "0.1.0",
   "type": "module",
-  "description": "Rule engines for oculus — tree-sitter, ast-grep, and fact rules",
+  "description": "Rule engines for oculus — native pattern rules, tree-sitter AST rules, and semantic analysis (type checkers + semgrep)",
   "main": "src/index.ts",
   "types": "src/index.d.ts",
   "scripts": {

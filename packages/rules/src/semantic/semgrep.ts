@@ -18,6 +18,8 @@
  */
 
 import { spawnSync } from "node:child_process";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import type { LintDiagnostic } from "../../../lint/src/index";
 
 // ---------------------------------------------------------------------------
@@ -79,6 +81,29 @@ export const DEFAULT_SEMGREP_CONFIG: SemgrepConfig = {
   args: ["--config=auto", "--json", "--quiet"],
   timeoutMs: DEFAULT_TIMEOUT_MS,
 };
+
+/**
+ * Load semgrep configuration from `.pi/oculus.json` (the `semgrep` key),
+ * merged over the defaults. Returns the defaults when the file is missing,
+ * unparseable, or has no `semgrep` section.
+ *
+ * Example `.pi/oculus.json`:
+ * ```json
+ * { "semgrep": { "enabled": true, "rules": "p/security-audit" } }
+ * ```
+ */
+export function loadSemgrepConfig(cwd: string = process.cwd()): SemgrepConfig {
+  try {
+    const raw = readFileSync(resolve(cwd, ".pi/oculus.json"), "utf8");
+    const parsed = JSON.parse(raw) as { semgrep?: SemgrepConfig };
+    if (parsed && typeof parsed.semgrep === "object" && parsed.semgrep) {
+      return { ...DEFAULT_SEMGREP_CONFIG, ...parsed.semgrep };
+    }
+  } catch {
+    // Missing/invalid config — fall back to defaults. Intentional no-op.
+  }
+  return DEFAULT_SEMGREP_CONFIG;
+}
 
 // ---------------------------------------------------------------------------
 // Binary probing

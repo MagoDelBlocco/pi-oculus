@@ -52,18 +52,18 @@ export type IssueSnapshotFn = () => IssueEntry[];
  *
  * @param ui - Pi's UI context (may be undefined in headless mode)
  * @param snapshotFn - Function that returns current open issues from engine state
- * @returns { subscribe, update } — subscribe to engine changes, force re-render
+ * @returns `update` — call to re-render the widget from the latest snapshot.
+ *          The engine wires this to `EngineState.subscribe` so the widget
+ *          repaints on every diagnostic change. No-op when the UI can't host
+ *          a widget (headless / older runtimes).
  */
 export function setupWidget(
 	ui: ExtensionUIContext | undefined,
 	snapshotFn: IssueSnapshotFn,
-): { subscribe: (fn: () => void) => () => void } {
+): () => void {
 	const WIDGET_KEY = "oculus:issues";
 
 	const setWidget = ui?.setWidget;
-	if (typeof setWidget !== "function") {
-		return { subscribe: () => () => {} };
-	}
 
 	/** Render the widget content as lines of text. */
 	function render(): string[] {
@@ -97,24 +97,14 @@ export function setupWidget(
 		return lines;
 	}
 
-	/** Update the widget with fresh content. */
+	/** Re-render the widget with fresh content from the snapshot. */
 	function update(): void {
-		setWidget!(WIDGET_KEY, render(), { placement: "belowEditor" });
+		if (typeof setWidget !== "function") return;
+		setWidget(WIDGET_KEY, render(), { placement: "belowEditor" });
 	}
 
 	// Initial render.
-	setWidget(WIDGET_KEY, render(), { placement: "belowEditor" });
+	update();
 
-	// Allow engine to subscribe change notifications that trigger re-render.
-	const listeners: Array<() => void> = [];
-	return {
-		subscribe: (fn: () => void) => {
-			listeners.push(fn);
-			fn(); // Initial call to trigger first update
-			return () => {
-				const idx = listeners.indexOf(fn);
-				if (idx !== -1) listeners.splice(idx, 1);
-			};
-		},
-	};
+	return update;
 }

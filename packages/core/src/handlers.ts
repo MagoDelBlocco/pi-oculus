@@ -26,7 +26,7 @@ import { updateOculusStatus } from "./status";
 import { makeReadFile } from "./io";
 import { registerAnalyzeCommand } from "./analyze-command";
 import { runBuiltInAstRules } from "../../rules/src/tree-sitter";
-import { runSemanticAnalysis } from "../../rules/src/semantic";
+import { runSemanticDiagnostics } from "../../rules/src/semantic";
 import { parseSuppressions, isSuppressed } from "./suppression";
 import { shouldSkipByPath } from "./guard";
 import type { RuleMatch } from "../../rules/src/types";
@@ -50,13 +50,11 @@ export function extractDiagnostics(event: ToolResultEvent): unknown[] | null {
 export function registerHandlers(pi: ExtensionAPI, state: EngineState): void {
 	pi.on("session_start", async (_event, ctx) => {
 		state.reset();
-		updateOculusStatus(state, ctx.ui);
-		appendLog("session_start");
 
 		const { setupWidget } = await import("../../view/src/index");
-		// Single source of truth: widget reads from engine state via snapshotFn.
+		// Single source of truth: the widget reads from engine state via snapshotFn.
 		// No separate tracker — what the user sees is exactly what the model sees.
-		const { subscribe } = setupWidget(ctx.ui, () => {
+		const renderWidget = setupWidget(ctx.ui, () => {
 			return [...state.diagnostics.values()]
 				.filter((r) => r.status !== "resolved")
 				.map((r) => ({
@@ -69,8 +67,16 @@ export function registerHandlers(pi: ExtensionAPI, state: EngineState): void {
 					status: "open" as const,
 				}));
 		});
-		// Re-render widget whenever engine state changes.
-		subscribe(() => updateOculusStatus(state, ctx.ui));
+
+		// Re-render the widget and status bar whenever engine state changes.
+		// `EngineState.subscribe` fires on both upsert and resolution, so the UI
+		// stays in sync across the whole turn — not just at session start.
+		const refresh = () => {
+			renderWidget();
+			updateOculusStatus(state, ctx.ui);
+		};
+		state.subscribe(refresh);
+		refresh();
 	});
 
 	pi.on("tool_result", async (event, _ctx) => {
@@ -84,7 +90,6 @@ export function registerHandlers(pi: ExtensionAPI, state: EngineState): void {
 	});
 
 	pi.on("tool_call", async (event: ToolCallEvent, _ctx) => {
-		appendLog(`tool_call: ${event.toolName}`);
 		if (event.toolName === "edit" || event.toolName === "write") {
 			state.pendingFileChange = true;
 			const input = event.input as Record<string, unknown>;
@@ -104,7 +109,6 @@ export function registerHandlers(pi: ExtensionAPI, state: EngineState): void {
 	});
 
 	pi.on("tool_execution_end", async (_event, ctx) => {
-		appendLog(`tool_execution_end pending=${state.pendingFileChange}`);
 		if (!state.pendingFileChange) {
 			// Defensive cleanup: if no pending file change, clear stale snapshots
 			// for files not currently in changedFiles. This handles the case where
@@ -230,7 +234,10 @@ async function runAstRules(
   state: EngineState,
   readFile: (path: string) => Promise<string>,
 ): Promise<void> {
-  const files = [...state.lintPending].filter((p) => !shouldSkipByPath(p));
+  // `changedFiles` holds this turn's targets (drained from `lintPending` by the
+  // turn_end handler). `lintPending` is already cleared by this point, so we
+  // must read from `changedFiles` here.
+  const files = [...state.changedFiles].filter((p) => !shouldSkipByPath(p));
   const now = Date.now();
   const seenAstIds = new Set<string>();
 
@@ -256,10 +263,10 @@ async function runAstRules(
     }
   }
 
-  // Resolve AST diagnostics that no longer appear
+  // Resolve AST diagnostics that no longer appear in a re-analyzed file.
   for (const record of state.diagnostics.values()) {
     if (record.diagnostic.filePath === undefined) continue;
-    if (!state.lintPending.has(record.diagnostic.filePath)) continue;
+    if (!state.changedFiles.has(record.diagnostic.filePath)) continue;
     if (record.status === "resolved") continue;
     if (record.diagnostic.source !== "oculus-ast") continue;
     if (seenAstIds.has(record.id)) continue;
@@ -306,7 +313,8 @@ async function runSemanticRules(
   state: EngineState,
   readFile: (path: string) => Promise<string>,
 ): Promise<void> {
-  const files = [...state.lintPending].filter((p) => !shouldSkipByPath(p));
+  // See runAstRules: targets live in `changedFiles` at turn_end, not lintPending.
+  const files = [...state.changedFiles].filter((p) => !shouldSkipByPath(p));
   const now = Date.now();
   const seenSemanticIds = new Set<string>();
 
@@ -325,9 +333,9 @@ async function runSemanticRules(
 
   if (checkerFiles.length === 0) return;
 
-  // Run semantic analysis (type checkers)
+  // Run semantic analysis: type checkers (tsc/mypy/cargo/pyright) + semgrep.
   try {
-    const results = await runSemanticAnalysis(checkerFiles);
+    const results = await runSemanticDiagnostics(checkerFiles);
 
     for (const [filePath, diagnostics] of results) {
       if (diagnostics.length === 0) continue;
@@ -370,6 +378,10 @@ function upsertSemanticDiagnostic(
     id: diag.id,
     diagnostic: {
       ...diag,
+      // Normalize the source so the resolution pass (which keys off
+      // "oculus-semantic") can find these again. The original checker is still
+      // visible to the model via the rule id (e.g. "tsc/error", "semgrep/...").
+      source: "oculus-semantic",
       age: 0,
       snippet,
     },
@@ -393,13 +405,6 @@ function snapshotForDiff(state: EngineState, filePath: string): void {
 	if (content) {
 		state.fileSnapshotMetrics.set(filePath, analyzeFile(content));
 	}
-}
-
-function appendLog(msg: string): void {
-	try {
-		const line = `[oculus] ${new Date().toISOString()} ${msg}\n`;
-		require("node:fs").appendFileSync("/tmp/oculus-events.log", line);
-	} catch { /* no-op */ }
 }
 
 function coerceDiagnostic(

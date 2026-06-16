@@ -16,6 +16,8 @@ the results into the next model turn as a structured Markdown report.
 │  tool_execution ──►  read changed files → native metrics + rules │
 │                        queue files for linting                   │
 │  turn_end       ──►  run linters (parallel)                      │
+│                        run tree-sitter AST rules                 │
+│                        run semantic layer (type checkers+semgrep)│
 │                        run autofix pipeline (dry-run)            │
 │                        build Markdown report                     │
 │  context        ──►  inject report as user message to LLM        │
@@ -31,7 +33,7 @@ Six packages, each with a single responsibility:
 | `oculus-rules`   | `packages/rules/`   | Maps native pattern ids to rule metadata + thresholds |
 | `oculus-smart`   | `packages/smart/`   | Autofix pipeline, scoring exports                     |
 | `oculus-lint`    | `packages/lint/`    | Parallel external-linter runner with output parsers   |
-| `oculus-view`    | `packages/view/`    | `IssueTracker` + widget rendered below the editor     |
+| `oculus-view`    | `packages/view/`    | Snapshot-driven widget rendered below the editor      |
 
 The pi entry point is `index.ts`, which calls into `oculus-core`.
 
@@ -69,7 +71,26 @@ eslint, prettier, and biome. Each linter:
 Linting is batched at `turn_end` rather than per-edit because spawning
 eslint/prettier/biome per tool call is too slow for tight agent loops.
 
-#### Stage 3: Autofix Pipeline (`turn_end`, after linting)
+#### Stage 2.5: Tree-sitter AST Rules (`turn_end`, after linting)
+
+For `.ts/.tsx/.js/.jsx/.mjs/.cjs` files, structural AST rules run via
+tree-sitter (`runBuiltInAstRules`): unused imports, deep nesting, dangerous
+APIs (eval/innerHTML), magic numbers, and long parameter lists. These are
+gated behind a graceful availability check — if the native tree-sitter binding
+can't load in the host runtime, the layer degrades to a no-op rather than
+failing the turn. Diagnostics carry `source: "oculus-ast"`.
+
+#### Stage 2.75: Semantic Layer (`turn_end`, after AST)
+
+The slowest layer. For each changed file it runs the available type checkers
+(`tsc`, `mypy`, `cargo check`, `pyright`) **and** semgrep, merging both into a
+per-file diagnostic set via `runSemanticDiagnostics()`. Each tool is probed for
+availability first, so missing binaries are skipped silently — semgrep, in
+particular, no-ops cleanly when it isn't installed. Diagnostics are normalized
+to `source: "oculus-semantic"` (the originating tool stays visible in the rule
+id, e.g. `tsc/error`, `semgrep/...`).
+
+#### Stage 3: Autofix Pipeline (`turn_end`, after the semantic layer)
 
 For files where at least one lint diagnostic has `hasFix: true`, the autofix
 pipeline runs a dry-run through each configured fixer (default: eslint, prettier):
@@ -508,6 +529,28 @@ Default: 30 seconds per linter per file. Override via `LinterRunner` constructor
 const runner = createLinterRunner(undefined, 10_000); // 10 seconds
 ```
 
+### semgrep
+
+semgrep runs as part of the semantic layer whenever the `semgrep` binary is on
+`PATH`. It's a no-op otherwise. Tune it via the `semgrep` key in
+`.pi/oculus.json` (merged over the defaults by `loadSemgrepConfig`):
+
+```json
+{
+  "semgrep": {
+    "enabled": true,
+    "args": ["--config=auto", "--json", "--quiet"],
+    "rules": "p/security-audit",
+    "timeoutMs": 60000
+  }
+}
+```
+
+- `enabled` — set `false` to disable semgrep even when installed.
+- `args` — base CLI args (defaults to `--config=auto --json --quiet`).
+- `rules` — extra `--config` target (a ruleset slug, YAML file, or directory).
+- `timeoutMs` — per-invocation timeout (default 60s; semgrep can be slow).
+
 ---
 
 ## Engine State
@@ -590,10 +633,20 @@ the status call is skipped.
 
 ---
 
-## What's Intentionally Not Here
+## Rule Layers
 
-Tree-sitter and ast-grep were previously advertised but were no-op stubs.
-Rule detection now happens entirely through the native single-pass scanner,
-which covers every previously-claimed fact rule. If you need AST-level
-analysis, add a new linter (e.g. `tsc --noEmit`, `cargo clippy`, `golangci-lint`)
-rather than trying to build AST rules into oculus itself.
+Oculus detects issues through four complementary layers, each owning a distinct
+`source` so resolution never crosses wires:
+
+| Layer | When | Source | What it finds |
+|-------|------|--------|---------------|
+| Native scanner | per-edit (`tool_execution_end`) | `oculus-native`, `oculus-rules` | single-pass pattern + complexity/entropy fact rules |
+| External linters | `turn_end` | `eslint` / `prettier` / `biome` | style + correctness from configured linters |
+| Tree-sitter AST | `turn_end` | `oculus-ast` | structural rules (unused imports, deep nesting, dangerous APIs, magic numbers, long params) |
+| Semantic | `turn_end` | `oculus-semantic` | type checkers (tsc/mypy/cargo/pyright) + semgrep |
+
+The AST and semantic layers are best-effort: they probe for the required
+tooling (tree-sitter binding, `tsc`, `semgrep`, …) and degrade to a no-op when
+it isn't available, so a turn never fails because a tool is missing. They run
+at `turn_end` rather than per-edit because they're too slow for tight agent
+loops.
