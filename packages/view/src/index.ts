@@ -69,7 +69,7 @@ export function setupWidget(
 	function render(): string[] {
 		const open = snapshotFn();
 		if (open.length === 0) {
-			return ["Oculus: no outstanding issues"];
+			return [];
 		}
 
 		const lines = [`Oculus: ${open.length} outstanding issues`];
