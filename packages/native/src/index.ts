@@ -1,1 +1,9 @@
-/**\n * oculus-native — TypeScript bridge to the C++ N-API addon.\n *\n * Re-exports everything from native-bridge.ts. The actual .node binary\n * lives in `packages/native/build/Release/oculus.node` and is loaded\n * by the bridge at module initialization time.\n */\n\nexport * from \"./native-bridge\";
+/**
+ * oculus-native — TypeScript bridge to the C++ N-API addon.
+ *
+ * Re-exports everything from native-bridge.ts. The actual .node binary
+ * lives in `packages/native/build/Release/oculus.node` and is loaded
+ * by the bridge at module initialization time.
+ */
+
+export * from "./native-bridge";

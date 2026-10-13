@@ -1,15 +1,8 @@
+import type { ExtensionUIContext } from "@earendil-works/pi-coding-agent";
 import type { EngineState } from "./state";
 import { activeDiagnostics } from "./report";
 
-interface ThemeLike {
-	bg: (color: string, text: string) => string;
-	fg: (color: string, text: string) => string;
-}
-
-interface UiLike {
-	setStatus: (key: string, value: string) => void;
-	theme: ThemeLike;
-}
+type UiLike = Pick<ExtensionUIContext, "setStatus" | "theme">;
 
 export function updateOculusStatus(
 	state: EngineState,

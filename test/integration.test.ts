@@ -2,13 +2,15 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { createState, registerHandlers } from "../packages/core/src/index";
 import { writeFileSync, rmSync, mkdtempSync, mkdirSync } from "node:fs";
 import path from "node:path";
-import os from "node:os";
 
 let TEST_DIR: string;
 
 describe("oculus integration test", () => {
 	beforeEach(() => {
-		TEST_DIR = mkdtempSync(path.join(os.tmpdir(), "oculus-integration-"));
+		// NOTE: deliberately NOT under os.tmpdir(): oculus excludes everything
+		// beneath /tmp from all diagnostics (guard.isTmpPath), so fixtures there
+		// would never be analyzed. Use a scratch dir inside the repo instead.
+		TEST_DIR = mkdtempSync(path.join(process.cwd(), ".oculus-integration-"));
 	});
 	afterEach(() => {
 		rmSync(TEST_DIR, { recursive: true, force: true });

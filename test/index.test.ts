@@ -1379,6 +1379,20 @@ describe("shouldSkipByPath", () => {
 		expect(shouldSkipByPath("src/a.ts")).toBe(false);
 		expect(shouldSkipByPath("packages/lib/index.js")).toBe(false);
 	});
+
+	it("skips files under the /tmp scratch directory", () => {
+		expect(shouldSkipByPath("/tmp")).toBe(true);
+		expect(shouldSkipByPath("/tmp/x.ts")).toBe(true);
+		expect(shouldSkipByPath("/tmp/a/b/c.ts")).toBe(true);
+		expect(shouldSkipByPath("/tmp/probe dir/broken.js")).toBe(true);
+	});
+
+	it("does not skip paths that merely mention tmp", () => {
+		expect(shouldSkipByPath("/tmpx/x.ts")).toBe(false);
+		expect(shouldSkipByPath("/home/me/tmp/x.ts")).toBe(false);
+		expect(shouldSkipByPath("src/tmp/x.ts")).toBe(false);
+		expect(shouldSkipByPath("mytmp.ts")).toBe(false);
+	});
 });
 
 describe("analyzeChangedFiles + guard", () => {

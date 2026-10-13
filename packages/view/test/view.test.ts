@@ -33,11 +33,11 @@ function issue(over: Partial<IssueEntry> = {}): IssueEntry {
 }
 
 describe("setupWidget", () => {
-	it("renders 'no outstanding issues' for an empty snapshot", () => {
+	it("renders nothing (empty content) for an empty snapshot", () => {
 		const pi = makePi();
 		setupWidget(pi.ui, () => []);
 		expect(pi.__calls.length).toBe(1);
-		expect(pi.__calls[0][1][0]).toBe("Oculus: no outstanding issues");
+		expect(pi.__calls[0][1]).toEqual([]);
 	});
 
 	it("groups by severity and renders truncation for >5 items", () => {

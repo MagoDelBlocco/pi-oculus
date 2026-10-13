@@ -46,6 +46,7 @@ export type { SuppressionMap } from "./suppression";
 export {
 	shouldSkipAnalysis,
 	shouldSkipByPath,
+	isTmpPath,
 	MAX_ANALYSIS_BYTES,
 } from "./guard";
 export { registerAnalyzeCommand } from "./analyze-command";

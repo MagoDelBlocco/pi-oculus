@@ -222,6 +222,16 @@ export function registerHandlers(pi: ExtensionAPI, state: EngineState): void {
 
 const AST_EXTENSIONS = new Set([".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"]);
 
+const SNIPPET_MAX = 120;
+
+/** Trim trailing whitespace and clip a line to `SNIPPET_MAX` chars for display. */
+function clipSnippet(line: string): string | undefined {
+	const trimmed = line.replace(/\s+$/, "");
+	if (!trimmed) return undefined;
+	if (trimmed.length <= SNIPPET_MAX) return trimmed;
+	return `${trimmed.slice(0, SNIPPET_MAX - 1)}\u2026`;
+}
+
 function shouldRunAst(filePath: string): boolean {
   const lower = filePath.toLowerCase();
   for (const ext of AST_EXTENSIONS) {

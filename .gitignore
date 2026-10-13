@@ -83,3 +83,6 @@ coverage/
 tmp/
 temp/
 *.tmp
+
+# Oculus integration-test scratch dirs (must live outside /tmp — see guard.isTmpPath)
+.oculus-integration-*

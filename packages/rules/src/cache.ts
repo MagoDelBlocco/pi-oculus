@@ -143,7 +143,7 @@ class LRUCache<K, V> {
    */
   has(key: K, hash: string): boolean {
     const entry = this.cache.get(key);
-    return entry !== null && entry.hash === hash;
+    return entry !== undefined && entry.hash === hash;
   }
 
   /**

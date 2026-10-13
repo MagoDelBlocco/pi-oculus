@@ -6,7 +6,7 @@
  * on every file. Used by the /oculus-analyze command.
  */
 
-import { readdirSync, readFileSync } from "node:fs";
+import { readdirSync, readFileSync, type Dirent } from "node:fs";
 import { resolve, extname } from "node:path";
 import { analyzeFile } from "../../native/src/native-bridge";
 import { runRulesFromMetrics } from "../../rules/src/index";
@@ -14,7 +14,7 @@ import { runBuiltInAstRules } from "../../rules/src/tree-sitter";
 import { runSemanticDiagnostics } from "../../rules/src/semantic";
 import type { RuleMatch } from "../../rules/src/types";
 import { LinterRunner, type LintResult } from "../../lint/src/index";
-import { shouldSkipByPath, shouldSkipAnalysis } from "./guard";
+import { shouldSkipByPath, shouldSkipAnalysis, isTmpPath } from "./guard";
 
 const SKIP_DIRS = new Set([
 	"node_modules", ".git", ".pi", ".next", ".nuxt", ".cache",
@@ -55,12 +55,15 @@ export function collectSourceFiles(dir: string, maxFiles = 500): string[] {
 
 function walk(dir: string, acc: string[], max: number): void {
 	if (acc.length >= max) return;
-	let entries: string[];
+	let entries: Dirent[];
 	try { entries = readdirSync(dir, { withFileTypes: true }); }
 	catch { return; }
 	for (const e of entries) {
 		if (acc.length >= max) break;
 		const p = resolve(dir, e.name);
+		// Prune the /tmp subtree wholesale — nothing under the scratch
+		// directory is ever a diagnostic target (see guard.isTmpPath).
+		if (isTmpPath(p)) continue;
 		if (e.isDirectory() && !SKIP_DIRS.has(e.name)) walk(p, acc, max);
 		else if (e.isFile() && isSource(e.name, p)) acc.push(p);
 	}
@@ -205,7 +208,9 @@ function allDiags(file: FileAnalysis) {
 }
 
 /** Highest severity for a file, or "clean". */
-function highestSeverity(file: FileAnalysis): string {
+type SeverityBucket = "error" | "warning" | "info" | "clean";
+
+function highestSeverity(file: FileAnalysis): SeverityBucket {
 	if (file.error) return "warning";
 	const diags = allDiags(file);
 	if (diags.some((d) => d.severity === "error")) return "error";
@@ -222,7 +227,7 @@ export function formatCwdReport(a: CwdAnalysis): string {
 		`Found ${a.totalRules} rule match(es) and ${a.totalLints} lint diagnostic(s).`,
 	);
 	lines.push("");
-	const groups = { error: [], warning: [], info: [], clean: [] };
+	const groups: Record<SeverityBucket, FileAnalysis[]> = { error: [], warning: [], info: [], clean: [] };
 	for (const f of a.files) groups[highestSeverity(f)].push(f);
 	appendGroup(lines, "Errors", groups.error);
 	appendGroup(lines, "Warnings", groups.warning);

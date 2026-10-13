@@ -74,7 +74,7 @@ export function runAstQuery(
   if (!ensureParser()) return [];
 
   try {
-    const tree = parseSource(source);
+    const tree = parseSource(filePath, source);
     if (!tree || !tree.rootNode) return [];
 
     const ParserClass = getParserClass();

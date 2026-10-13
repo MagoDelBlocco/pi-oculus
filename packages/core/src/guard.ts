@@ -36,6 +36,22 @@ export function shouldSkipAnalysis(content: string): boolean {
 const SKIP_PATH_RE =
 	/(?:^|\/)(?:package-lock\.json|yarn\.lock|pnpm-lock\.yaml|bun\.lockb|Cargo\.lock|Gemfile\.lock|composer\.lock|poetry\.lock)$|(?:\.min\.(?:js|css)$)|(?:\.map$)/;
 
+/**
+ * True when `filePath` lies under the system scratch directory `/tmp`
+ * (the path itself, or anything beneath it).
+ *
+ * `/tmp` holds throwaway artifacts — probe snippets, diff scratch files,
+ * test fixtures the model will never maintain. Diagnosing them only pollutes
+ * the report, so every layer (native analysis, pattern rules, AST rules,
+ * semantic rules, linters, autofix, cwd scan) treats them as invisible.
+ *
+ * Only absolute `/tmp/...` paths match: project-local `tmp/` or `mytmp.ts`
+ * are ordinary source and remain eligible for analysis.
+ */
+export function isTmpPath(filePath: string): boolean {
+	return filePath === "/tmp" || filePath.startsWith("/tmp/");
+}
+
 export function shouldSkipByPath(filePath: string): boolean {
-	return SKIP_PATH_RE.test(filePath);
+	return isTmpPath(filePath) || SKIP_PATH_RE.test(filePath);
 }
