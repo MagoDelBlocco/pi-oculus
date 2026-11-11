@@ -62,6 +62,8 @@ export class EngineState {
 	private listeners: Listener[] = [];
 
 	upsertDiagnostic(record: DiagnosticRecord): void {
+		const existing = this.diagnostics.get(record.id);
+		if (existing && existing.status !== "resolved") record.firstSeen = existing.firstSeen;
 		// Reappearing diagnostic: clear any "resolved-this-cycle" claim — we'd
 		// look silly telling the model "you fixed X" and then reporting X again.
 		this.resolvedSinceLastReport.delete(record.id);

@@ -23,8 +23,9 @@
  */
 
 import { spawn } from "node:child_process";
+import { resolve } from "node:path";
 import { scoreDiagnostic } from "../../native/src/native-bridge";
-import { DEFAULT_LINTERS, resolveAvailableLinters } from "./linter-defaults";
+import { DEFAULT_LINTERS, resolveAvailableLinters, localBinary } from "./linter-defaults";
 import { loadLintConfig, mergeLintConfig } from "./config";
 
 /** Severity levels matching the core diagnostic system. */
@@ -85,7 +86,7 @@ export interface LinterConfig {
 	name: string;
 	command: string;
 	args: readonly string[];
-	parser: "eslint" | "generic" | "json";
+	parser: "eslint" | "generic" | "json" | "status";
 	enabled?: boolean;
 	/**
 	 * File extensions (including the dot, e.g. ".ts") this linter is willing to
@@ -114,6 +115,7 @@ interface Spawned {
 	stdout: string;
 	stderr: string;
 	code: number | null;
+	timedOut: boolean;
 }
 
 function runOnce(
@@ -121,23 +123,28 @@ function runOnce(
 	args: readonly string[],
 	input: string,
 	timeoutMs: number,
+	cwd: string,
 ): Promise<Spawned> {
 	return new Promise((resolve) => {
 		const out: Buffer[] = [];
 		const err: Buffer[] = [];
+		let timedOut = false;
 		const child = spawn(cmd, args, {
 			stdio: ["pipe", "pipe", "pipe"],
+			cwd,
 			env: { ...process.env, FORCE_COLOR: "0" },
 		});
-		const timer = setTimeout(() => child.kill("SIGKILL"), timeoutMs);
+		const timer = setTimeout(() => { timedOut = true; child.kill("SIGKILL"); }, timeoutMs);
 		child.stdout.on("data", (b) => out.push(b));
 		child.stderr.on("data", (b) => err.push(b));
+		child.stdin.on("error", () => { /* spawn failures are reported by the child */ });
 		child.on("error", () => {
 			clearTimeout(timer);
 			resolve({
 				stdout: Buffer.concat(out).toString("utf8"),
 				stderr: Buffer.concat(err).toString("utf8"),
 				code: null,
+				timedOut,
 			});
 		});
 		child.on("close", (code) => {
@@ -146,6 +153,7 @@ function runOnce(
 				stdout: Buffer.concat(out).toString("utf8"),
 				stderr: Buffer.concat(err).toString("utf8"),
 				code,
+				timedOut,
 			});
 		});
 		child.stdin.end(input);
@@ -165,6 +173,9 @@ function runOnce(
 export class LinterRunner {
 	private readonly linters: readonly LinterConfig[];
 	private readonly timeoutMs: number;
+	private readonly cwd: string;
+	private active = 0;
+	private readonly waiters: Array<() => void> = [];
 
 	/**
 	 * Create a linter runner with custom configs or defaults.
@@ -172,9 +183,10 @@ export class LinterRunner {
 	 * @param linters - Custom linter configs. Defaults to DEFAULT_LINTERS.
 	 * @param timeoutMs - Per-linter timeout. Defaults to 30000ms.
 	 */
-	constructor(linters?: readonly LinterConfig[], timeoutMs?: number) {
+	constructor(linters?: readonly LinterConfig[], timeoutMs?: number, cwd = process.cwd()) {
 		this.linters = linters ?? DEFAULT_LINTERS;
 		this.timeoutMs = timeoutMs ?? DEFAULT_TIMEOUT_MS;
+		this.cwd = cwd;
 	}
 
 	/**
@@ -188,10 +200,10 @@ export class LinterRunner {
 	 * @param timeoutMs - Per-linter timeout
 	 */
 	static async create(cwd = process.cwd(), timeoutMs?: number): Promise<LinterRunner> {
-		const available = await resolveAvailableLinters();
+		const available = await resolveAvailableLinters(DEFAULT_LINTERS, cwd);
 		const userConfig = loadLintConfig(cwd);
 		const merged = mergeLintConfig(available, userConfig);
-		return new LinterRunner(merged, timeoutMs);
+		return new LinterRunner(merged, timeoutMs, cwd);
 	}
 
 	/** Run all enabled, applicable linters against one file in parallel. */
@@ -208,8 +220,8 @@ export class LinterRunner {
 	async lintFiles(
 		files: Array<{ filePath: string; content: string }>,
 	): Promise<Map<string, LintResult[]>> {
-		const results = await Promise.all(
-			files.map(async (f) => [f.filePath, await this.lintFile(f.filePath, f.content)] as const),
+		const results = await mapLimited(files, 4, async (f) =>
+			[f.filePath, await this.lintFile(f.filePath, f.content)] as const,
 		);
 		return new Map(results);
 	}
@@ -221,28 +233,67 @@ export class LinterRunner {
 	): Promise<LintResult> {
 		const start = performance.now();
 		const args = linter.args.map((a) => a.replace("$file", filePath));
+		await this.acquire();
 		try {
-			const r = await runOnce(linter.command, args, content, this.timeoutMs);
-			const output = r.stdout || r.stderr || "";
-			const diagnostics = parseOutput(linter, filePath, output);
+			const r = await runOnce(localBinary(linter.command, this.cwd) ?? linter.command, args, content, this.timeoutMs, this.cwd);
+			const output = [r.stdout, r.stderr].filter(Boolean).join("\n");
+			const diagnostics = parseOutput(linter, filePath, r.stdout || r.stderr, content, r.code);
+			const error = r.timedOut ? `Timed out after ${this.timeoutMs}ms`
+				: r.code === null ? "Could not start linter"
+				: r.code !== 0 && diagnostics.length === 0 ? `Exited with code ${r.code}: ${output.trim().slice(0, 240) || "no diagnostic output"}`
+				: undefined;
+			if (error) diagnostics.push(toolFailure(filePath, linter.name, error));
 			return {
 				filePath,
 				linter: linter.name,
 				diagnostics,
 				output,
 				durationMs: Math.round(performance.now() - start),
+				error,
 			};
 		} catch (e) {
+			const error = e instanceof Error ? e.message : String(e);
 			return {
 				filePath,
 				linter: linter.name,
-				diagnostics: [],
+				diagnostics: [toolFailure(filePath, linter.name, error)],
 				output: "",
 				durationMs: Math.round(performance.now() - start),
-				error: e instanceof Error ? e.message : String(e),
+				error,
 			};
+		} finally {
+			this.release();
 		}
 	}
+
+	private async acquire(): Promise<void> {
+		if (this.active < 4) { this.active++; return; }
+		await new Promise<void>((resolve) => this.waiters.push(resolve));
+	}
+
+	private release(): void {
+		const waiter = this.waiters.shift();
+		if (waiter) waiter();
+		else this.active--;
+	}
+}
+
+export async function mapLimited<T, R>(items: readonly T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
+	const results = new Array<R>(items.length);
+	let next = 0;
+	await Promise.all(Array.from({ length: Math.min(limit, items.length) }, async () => {
+		while (next < items.length) {
+			const i = next++;
+			results[i] = await fn(items[i]);
+		}
+	}));
+	return results;
+}
+
+function toolFailure(filePath: string, name: string, message: string): LintDiagnostic {
+	return { id: `${name}:${filePath}:tool-error`, filePath, line: 0, column: 0,
+		severity: "warning", rule: `${name}/tool-error`, message, source: name,
+		hasFix: false, fixCount: 0, blastRadius: 1, age: 0 };
 }
 
 /** Dispatch linter output to the appropriate parser based on config. */
@@ -250,12 +301,17 @@ function parseOutput(
 	linter: LinterConfig,
 	filePath: string,
 	output: string,
+	content: string,
+	code: number | null,
 ): LintDiagnostic[] {
 	switch (linter.parser) {
 		case "eslint":
 			return parseEslintJson(filePath, output);
 		case "json":
-			return parseGenericJson(filePath, output, linter.name);
+			return parseGenericJson(filePath, output, linter.name, content);
+		case "status":
+			return code === 1 ? [{ ...toolFailure(filePath, linter.name, "File does not meet formatting rules"),
+				rule: `${linter.name}/format`, id: `${linter.name}:${filePath}:format` }] : [];
 		case "generic":
 		default:
 			return parseGenericText(filePath, output, linter.name);
@@ -332,26 +388,47 @@ export function parseGenericJson(
 	filePath: string,
 	output: string,
 	linterName: string,
+	content = "",
 ): LintDiagnostic[] {
 	try {
-		const data = JSON.parse(output);
+		let data: any;
+		try { data = JSON.parse(output); }
+		catch { data = output.split("\n").filter(Boolean).map((line) => JSON.parse(line)); }
 		const diagnostics: LintDiagnostic[] = [];
 		const files = Array.isArray(data) ? data : [data];
-
 		for (const file of files) {
-			const list = file.diagnostics ?? file.messages ?? file.issues ?? [];
+			const list: any[] = Array.isArray(file?.diagnostics) ? file.diagnostics
+				: Array.isArray(file?.messages) ? file.messages
+				: Array.isArray(file?.issues) ? file.issues
+				: Array.isArray(file?.Issues) ? file.Issues
+				: Array.isArray(file?.files) ? file.files.flatMap((f: any) => f.offenses ?? [])
+				: file?.files && typeof file.files === "object" ? Object.values(file.files).flatMap((f: any) => f.messages ?? [])
+				: file?.reason === "compiler-message" && file.message ? [file.message]
+				: file && typeof file === "object" && (file.message || file.Text) ? [file] : [];
 			for (const diag of list) {
+				const rustSpan = linterName === "clippy" ? diag.spans?.find((s: any) =>
+					s.file_name && resolve(s.file_name) === resolve(filePath)) : undefined;
+				if (linterName === "clippy" && !rustSpan) continue;
+				const offset = diag.location?.span?.[0];
+				const prefix = Number.isInteger(offset) ? Buffer.from(content).subarray(0, offset).toString("utf8") : "";
+				const line = diag.location?.row ?? diag.line ?? diag.Pos?.Line ?? diag.location?.start_line ?? rustSpan?.line_start
+					?? (Number.isInteger(offset) ? prefix.split("\n").length : 0);
+				const column = diag.location?.column ?? diag.column ?? diag.Pos?.Column ?? diag.location?.start_column ?? rustSpan?.column_start
+					?? (Number.isInteger(offset) ? (prefix.split("\n").at(-1)?.length ?? 0) + 1 : 0);
+				const rule = diag.code?.code ?? diag.code ?? diag.rule ?? diag.category ?? diag.cop_name ?? diag.FromLinter ?? linterName;
+				const message = typeof diag.message === "string" ? diag.message
+					: diag.description ?? diag.Text ?? diag.message?.content ?? String(diag.message ?? diag);
 				diagnostics.push({
-					id: `${linterName}:${filePath}:${diag.line ?? 0}:${diag.column ?? 0}:${diag.rule ?? "unknown"}`,
+					id: `${linterName}:${filePath}:${line}:${column}:${rule}`,
 					filePath,
-					line: diag.line ?? 0,
-					column: diag.column ?? 0,
-					severity: mapSeverity(diag.severity),
-					rule: diag.rule ?? linterName,
-					message: diag.message ?? String(diag),
+					line,
+					column,
+					severity: mapSeverity(diag.severity ?? diag.level),
+					rule: String(rule),
+					message,
 					source: linterName,
-					hasFix: false,
-					fixCount: 0,
+					hasFix: Boolean(diag.fix),
+					fixCount: diag.fix ? 1 : 0,
 					blastRadius: 1,
 					age: 0,
 				});
@@ -387,7 +464,7 @@ export function parseGenericText(
 		// Filter out config noise from any linter.
 		if (line.includes("File ignored") || line.includes("No files matching")) continue;
 		const match = line.match(
-			/(\d+):(\d+)\s+(error|warning|info|hint)\s+(.*)/i,
+			/(\d+):(\d+):?\s+(error|warning|info|hint):?\s+(.*)/i,
 		);
 		if (match) {
 			diagnostics.push({

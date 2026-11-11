@@ -1,4 +1,6 @@
 import { describe, it, expect } from "vitest";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { join } from "node:path";
 import {
 	createLinterRunner,
 	LinterRunner,
@@ -9,6 +11,7 @@ import {
 	mapSeverity,
 	scoreLintResult,
 } from "../src/index";
+import { DEFAULT_LINTERS, resolveAvailableLinters } from "../src/linter-defaults";
 
 describe("LinterRunner", () => {
 	it("createLinterRunner returns instance", () => {
@@ -95,6 +98,27 @@ describe("parseEslintJson", () => {
 });
 
 describe("parseGenericJson", () => {
+	it("parses Ruff's top-level diagnostic array", () => {
+		const output = JSON.stringify([{ code: "F821", message: "Undefined name", location: { row: 3, column: 8 } }]);
+		expect(parseGenericJson("x.py", output, "ruff")).toMatchObject([
+			{ line: 3, column: 8, rule: "F821", message: "Undefined name" },
+		]);
+	});
+
+	it("parses Biome's JSON reporter locations", () => {
+		const output = JSON.stringify({ diagnostics: [{ category: "lint/suspicious/noDebugger", severity: "error",
+			description: "Unexpected debugger", location: { span: [4, 12] } }] });
+		expect(parseGenericJson("x.ts", output, "biome", "abc\ndebugger;\n")).toMatchObject([
+			{ line: 2, column: 1, severity: "error", rule: "lint/suspicious/noDebugger" },
+		]);
+	});
+
+	it("parses ShellCheck's top-level array", () => {
+		const output = JSON.stringify([{ line: 2, column: 1, level: "warning", code: 2086, message: "Double quote" }]);
+		expect(parseGenericJson("x.sh", output, "shellcheck")).toMatchObject([
+			{ line: 2, column: 1, severity: "warning", rule: "2086" },
+		]);
+	});
 	it("parses the {diagnostics: [...]} shape", () => {
 		const output = JSON.stringify({
 			diagnostics: [
@@ -131,6 +155,40 @@ describe("parseGenericJson", () => {
 		const output = JSON.stringify({ issues: [{ line: 1, message: "x" }] });
 		const d = parseGenericJson("a.ts", output, "x");
 		expect(d[0].rule).toBe("x");
+	});
+});
+
+describe("tool execution", () => {
+	it("discovers and runs a project-local linter in the requested cwd", async () => {
+		const cwd = mkdtempSync(join(process.cwd(), ".oculus-lint-cwd-"));
+		try {
+			const binDir = join(cwd, "node_modules", ".bin");
+			mkdirSync(binDir, { recursive: true });
+			writeFileSync(join(binDir, "oculus-test-linter"), "#!/bin/sh\nprintf '1:1 warning from-project\\n'\n", { mode: 0o755 });
+			const config = { name: "local", command: "oculus-test-linter", args: [] as string[], parser: "generic" as const };
+			expect(await resolveAvailableLinters([config], cwd)).toHaveLength(1);
+			const [result] = await new LinterRunner([config], 2000, cwd).lintFile("x.ts", "x");
+			expect(result.diagnostics).toMatchObject([{ message: "from-project" }]);
+		} finally { rmSync(cwd, { recursive: true, force: true }); }
+	});
+
+	it("lets ESLint load the project's configuration", () => {
+		const eslint = DEFAULT_LINTERS.find((l) => l.name === "eslint")!;
+		expect(eslint.args).not.toContain("--no-config-lookup");
+	});
+
+	it("discovers binaries under native ESM", async () => {
+		const available = await resolveAvailableLinters([
+			{ name: "node", command: process.execPath, args: [], parser: "generic" },
+		]);
+		expect(available).toHaveLength(1);
+	});
+
+	it("reports a formatting failure without positional output", async () => {
+		const runner = new LinterRunner([{ name: "formatter", command: process.execPath,
+			args: ["-e", "process.exit(1)"], parser: "status", extensions: [".ts"] }]);
+		const [result] = await runner.lintFile("x.ts", "let x=1");
+		expect(result.diagnostics).toMatchObject([{ rule: "formatter/format", line: 0 }]);
 	});
 });
 

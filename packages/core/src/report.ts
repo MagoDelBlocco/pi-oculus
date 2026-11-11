@@ -35,6 +35,10 @@ const SEVERITY_LABEL: Record<Severity, string> = {
 const ISSUE_LIMIT_PER_FILE = 20;
 /** Cap on resolved issues shown — credit the model but don't dwell. */
 const RESOLVED_LIMIT = 10;
+/** Quote fields from source files and external tools so they cannot create report structure. */
+const dataField = (value: string): string => JSON.stringify(value)
+	.replaceAll("<", "\\u003c")
+	.replaceAll(">", "\\u003e");
 
 /**
  * Build the Markdown-ish diagnostic report for the model.
@@ -139,7 +143,7 @@ function appendByFile(
 			},
 		);
 		lines.push("");
-		lines.push(`${file} (${pluralize(recs.length, "issue")})`);
+		lines.push(`${dataField(file)} (${pluralize(recs.length, "issue")})`);
 		const preExisting = state.preExistingIssues.get(file) ?? 0;
 		if (preExisting > 0) {
 			lines.push(`- pre-existing issues hidden: ${preExisting} (not blocking)`);
@@ -157,12 +161,12 @@ function renderIssue(lines: string[], rec: DiagnosticRecord): void {
 	const d = rec.diagnostic;
 	const badge = `[${SEVERITY_LABEL[d.severity]}]`;
 	const where = d.line > 0 ? `line ${d.line}` : "whole file";
-	lines.push(`- ${badge} ${where} — ${d.message} [${d.rule}]`);
+	lines.push(`- ${badge} ${where} — ${dataField(d.message)} [${dataField(d.rule)}]`);
 	if (d.snippet) {
-		lines.push(`    ${d.snippet}`);
+		lines.push(`    ${dataField(d.snippet)}`);
 	}
 	if (d.fix) {
-		lines.push(`    Fix: ${d.fix}`);
+		lines.push(`    Fix: ${dataField(d.fix)}`);
 	}
 }
 
@@ -174,7 +178,7 @@ function appendResolved(lines: string[], resolved: DiagnosticRecord[]): void {
 	for (const r of resolved.slice(0, RESOLVED_LIMIT)) {
 		const where = r.diagnostic.line > 0 ? `:${r.diagnostic.line}` : "";
 		lines.push(
-			`- ${r.diagnostic.filePath}${where} — ${r.diagnostic.message} [${r.diagnostic.rule}]`,
+			`- ${dataField(r.diagnostic.filePath)}${where} — ${dataField(r.diagnostic.message)} [${dataField(r.diagnostic.rule)}]`,
 		);
 	}
 	if (resolved.length > RESOLVED_LIMIT) {
@@ -186,7 +190,7 @@ function appendSuggestedFixes(lines: string[], state: EngineState): void {
 	const parts: string[] = [];
 	for (const fix of state.suggestedFixes.values()) {
 		const fixers = fix.fixers.length > 0 ? fix.fixers.join("+") : "autofix";
-		parts.push(`${fix.filePath} (${fixers})`);
+		parts.push(`${dataField(fix.filePath)} (${dataField(fixers)})`);
 	}
 	lines.push("");
 	lines.push(`Suggested fixes: ${parts.join(", ")}.`);

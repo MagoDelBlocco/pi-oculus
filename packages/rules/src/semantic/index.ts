@@ -12,7 +12,7 @@
 
 import { runSemanticAnalysis, type CheckerFile } from "./type-checker";
 import {
-  runSemgrepAnalysis,
+  runSemgrepAnalysisAsync,
   loadSemgrepConfig,
   type SemgrepConfig,
 } from "./semgrep";
@@ -36,6 +36,7 @@ export {
   runSemgrep,
   runSemgrepOnDir,
   runSemgrepAnalysis,
+  runSemgrepAnalysisAsync,
   isSemgrepAvailable,
   loadSemgrepConfig,
   DEFAULT_SEMGREP_CONFIG,
@@ -49,6 +50,12 @@ export interface SemanticOptions {
   timeoutMs?: number;
   /** semgrep config; defaults to `.pi/oculus.json` (the `semgrep` key). */
   semgrep?: SemgrepConfig;
+  /** Files whose type checks did not complete; used to preserve prior findings. */
+  failedFiles?: Set<string>;
+  /** Whether the Semgrep pass did not complete. */
+  semgrepStatus?: { failed: boolean };
+  /** Working directory for Semgrep config and execution. */
+  cwd?: string;
 }
 
 /**
@@ -66,13 +73,15 @@ export async function runSemanticDiagnostics(
   files: CheckerFile[],
   options: SemanticOptions = {},
 ): Promise<Map<string, LintDiagnostic[]>> {
-  const results = await runSemanticAnalysis(files, options.timeoutMs);
+  const results = await runSemanticAnalysis(files, options.timeoutMs, options.failedFiles, options.cwd);
   if (files.length === 0) return results;
 
-  const semgrepConfig = options.semgrep ?? loadSemgrepConfig();
-  const semgrepDiags = runSemgrepAnalysis(
+  const semgrepConfig = options.semgrep ?? loadSemgrepConfig(options.cwd);
+  const semgrepDiags = await runSemgrepAnalysisAsync(
     files.map((f) => ({ path: f.path })),
     semgrepConfig,
+    options.semgrepStatus,
+    options.cwd,
   );
   if (semgrepDiags.length === 0) return results;
 

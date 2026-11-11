@@ -88,7 +88,7 @@ export function registerAnalyzeCommand(
 		handler: async (_args, ctx) => {
 			ctx.ui.notify("Oculus: scanning cwd...", "info");
 			const analysis = await analyzeCwd(ctx.cwd);
-			const summary = `${analysis.totalFiles} files in ${analysis.durationMs}ms — ${analysis.totalRules} rule(s), ${analysis.totalLints} lint(s)`;
+			const summary = `${analysis.totalFiles} files in ${analysis.durationMs}ms — ${analysis.totalRules} rule(s), ${analysis.totalLints} lint(s)${analysis.truncated ? "; scan limit reached" : ""}`;
 			if (!ctx.hasUI) { ctx.ui.notify(`Oculus: ${summary}`, "info"); return; }
 			const inject = await showDialog(ctx, summary);
 			if (inject) {

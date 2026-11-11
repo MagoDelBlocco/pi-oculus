@@ -1,4 +1,6 @@
 import { spawn } from "node:child_process";
+import { existsSync } from "node:fs";
+import { dirname, join } from "node:path";
 
 export type FixerName = "eslint" | "prettier" | "biome";
 
@@ -27,6 +29,17 @@ export interface AutofixOptions {
 
 const DEFAULT_FIXERS: FixerName[] = ["eslint", "prettier"];
 const DEFAULT_TIMEOUT_MS = 30_000;
+
+function localBinary(command: string): string {
+	let dir = process.cwd();
+	while (true) {
+		const candidate = join(dir, "node_modules", ".bin", command);
+		if (existsSync(candidate)) return candidate;
+		const parent = dirname(dir);
+		if (parent === dir) return command;
+		dir = parent;
+	}
+}
 
 interface Spawned {
 	stdout: string;
@@ -83,9 +96,8 @@ async function runEslint(
 	const before = content;
 	try {
 		const r = await runFixer(
-			"npx",
+			localBinary("eslint"),
 			[
-				"eslint",
 				"--fix-dry-run",
 				"--format",
 				"json",
@@ -141,8 +153,8 @@ async function runPrettier(
 	const before = content;
 	try {
 		const r = await runFixer(
-			"npx",
-			["prettier", "--stdin-filepath", filePath],
+			localBinary("prettier"),
+			["--stdin-filepath", filePath],
 			content,
 			timeoutMs,
 		);
@@ -178,8 +190,8 @@ async function runBiome(
 	const before = content;
 	try {
 		const r = await runFixer(
-			"npx",
-			["biome", "format", "--stdin-file-path", filePath],
+			localBinary("biome"),
+			["format", "--stdin-file-path", filePath],
 			content,
 			timeoutMs,
 		);

@@ -33,6 +33,26 @@ function issue(over: Partial<IssueEntry> = {}): IssueEntry {
 }
 
 describe("setupWidget", () => {
+	it("caps widget height to a quarter of the viewport and each issue to three lines", () => {
+		const rows = Object.getOwnPropertyDescriptor(process.stdout, "rows");
+		try {
+			Object.defineProperty(process.stdout, "rows", { configurable: true, value: 16 });
+			const pi = makePi();
+			setupWidget(pi.ui, () => Array.from({ length: 8 }, (_, i) => issue({ id: String(i), message: "one\ntwo\nthree\nfour" })));
+			const lines = pi.__calls.at(-1)![1];
+			expect(lines.length).toBeLessThanOrEqual(4);
+			expect(lines.join("\n")).not.toContain("four");
+			Object.defineProperty(process.stdout, "rows", { configurable: true, value: 80 });
+			const second = makePi();
+			setupWidget(second.ui, () => [issue({ message: "one\ntwo\nthree\nfour" })]);
+			const detail = second.__calls.at(-1)![1].join("\n");
+			expect(detail).toContain("three");
+			expect(detail).not.toContain("four");
+		} finally {
+			if (rows) Object.defineProperty(process.stdout, "rows", rows);
+			else Reflect.deleteProperty(process.stdout, "rows");
+		}
+	});
 	it("renders nothing (empty content) for an empty snapshot", () => {
 		const pi = makePi();
 		setupWidget(pi.ui, () => []);

@@ -9,6 +9,26 @@
 /** Files larger than this skip native analysis + linting. */
 export const MAX_ANALYSIS_BYTES = 256_000;
 
+/** Source files Oculus can meaningfully diagnose. Data and prose are excluded. */
+const CODE_EXTENSIONS = new Set([
+	".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs",
+	".py", ".pyi", ".rs", ".go", ".java", ".cpp", ".cc", ".cxx",
+	".c", ".h", ".hpp", ".hxx", ".rb", ".php", ".cs", ".swift",
+	".kt", ".scala", ".sh", ".bash", ".zsh", ".css", ".scss",
+	".less", ".html", ".vue", ".svelte", ".lean",
+]);
+const CODE_BASENAMES = new Set([
+	"dockerfile", "makefile", "gnumakefile", "justfile", "rakefile",
+	"gemfile", "procfile", ".bashrc", ".zshrc",
+]);
+
+export function isCodePath(filePath: string): boolean {
+	const name = filePath.split(/[\\/]/).pop()?.toLowerCase() ?? "";
+	if (CODE_BASENAMES.has(name) || name.startsWith("dockerfile.")) return true;
+	const dot = name.lastIndexOf(".");
+	return dot >= 0 && CODE_EXTENSIONS.has(name.slice(dot));
+}
+
 /** First-N-byte window we inspect for binary detection. */
 const BINARY_SNIFF_BYTES = 8_192;
 
@@ -53,5 +73,5 @@ export function isTmpPath(filePath: string): boolean {
 }
 
 export function shouldSkipByPath(filePath: string): boolean {
-	return isTmpPath(filePath) || SKIP_PATH_RE.test(filePath);
+	return isTmpPath(filePath) || SKIP_PATH_RE.test(filePath) || !isCodePath(filePath);
 }

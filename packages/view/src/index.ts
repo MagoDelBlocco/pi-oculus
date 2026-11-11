@@ -11,6 +11,7 @@
  */
 
 import type { ExtensionUIContext } from "@earendil-works/pi-coding-agent";
+import { truncateToWidth } from "@earendil-works/pi-tui";
 
 /**
  * One issue for display in the widget.
@@ -87,14 +88,23 @@ export function setupWidget(
 			if (!items?.length) continue;
 			lines.push(`  ${sev.toUpperCase()}: ${items.length}`);
 			for (const item of items.slice(0, 5)) {
-				lines.push(`    ${item.file}:${item.line} ${item.message}`);
+				const messageLines = item.message.split(/\r?\n/);
+				lines.push(`    ${item.file.replace(/[\r\n]/g, " ")}:${item.line} ${messageLines[0] ?? ""}`);
+				for (const extra of messageLines.slice(1, 3)) lines.push(`      ${extra}`);
+				if (messageLines.length > 3) lines[lines.length - 1] += " …";
 			}
 			if (items.length > 5) {
 				lines.push(`    ...and ${items.length - 5} more`);
 			}
 		}
 
-		return lines;
+		const viewportRows = process.stdout.rows || 80;
+		const maxRows = Math.max(1, Math.floor(viewportRows / 4));
+		const visible = lines.length > maxRows
+			? maxRows === 1 ? [lines[0]] : [...lines.slice(0, maxRows - 1), "    ...more issues"]
+			: lines;
+		const width = process.stdout.columns || 120;
+		return visible.map((line) => truncateToWidth(line, width, "…"));
 	}
 
 	/** Re-render the widget with fresh content from the snapshot. */

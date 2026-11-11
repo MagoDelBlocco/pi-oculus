@@ -20,8 +20,6 @@ export interface LintDeps {
 	linters?: readonly LinterConfig[];
 }
 
-const LINT_SOURCE_PREFIXES = ["eslint", "prettier", "biome"] as const;
-
 /**
  * Run linters on every changed file. Files are read + linted in parallel.
  *
@@ -95,15 +93,16 @@ export async function lintChangedFiles(
 			state.lintResults.set(`${item.filePath}::${result.linter}`, result);
 
 			for (const diag of result.diagnostics) {
-				if (!diffFilter(diag)) continue;
 				if (isSuppressed(suppressions, diag.line, diag.rule)) continue;
 				seenIds.add(diag.id);
+				const prior = state.diagnostics.get(diag.id);
+				if (!diffFilter(diag) && (!prior || prior.status === "resolved")) continue;
 				const snippet =
 					diag.line > 0 ? clipSnippet(afterLines[diag.line - 1] ?? "") : undefined;
 				upsertLintDiagnostic(state, diag, snippet);
 			}
 		}
-		resolveDisappearedLint(state, item.filePath, seenIds);
+			resolveDisappearedLint(state, item.filePath, seenIds, new Set(item.results.filter((r) => !r.error).map((r) => r.linter)));
 	}
 }
 
@@ -156,16 +155,13 @@ function resolveDisappearedLint(
 	state: EngineState,
 	filePath: string,
 	seenIds: Set<string>,
+	ranSources: Set<string>,
 ): void {
 	for (const record of state.diagnostics.values()) {
 		if (record.diagnostic.filePath !== filePath) continue;
 		if (record.status === "resolved") continue;
-		if (!isLintSourced(record.diagnostic.source)) continue;
+		if (!ranSources.has(record.diagnostic.source)) continue;
 		if (seenIds.has(record.id)) continue;
 		state.markResolved(record.id);
 	}
-}
-
-function isLintSourced(source: string): boolean {
-	return LINT_SOURCE_PREFIXES.some((p) => source === p);
 }

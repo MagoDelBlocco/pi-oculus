@@ -17,7 +17,7 @@
  * + JSON parsing. Suppression is intentional.
  */
 
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import type { LintDiagnostic } from "../../../lint/src/index";
@@ -134,8 +134,9 @@ export function isSemgrepAvailable(): boolean {
 export function runSemgrep(
   files: readonly string[],
   config: SemgrepConfig = DEFAULT_SEMGREP_CONFIG,
+  status?: { failed: boolean },
 ): LintDiagnostic[] {
-  if (!isSemgrepAvailable()) return [];
+  if (!isSemgrepAvailable()) { if (status) status.failed = true; return []; }
   if (files.length === 0) return [];
 
   const args = buildSemgrepArgs(config, files);
@@ -150,14 +151,64 @@ export function runSemgrep(
 
   // Non-zero exit is normal for semgrep (means findings were detected).
   // Exit code 1 = findings, 2 = error, 124 = timeout, 130 = cancelled.
-  if (result.status === 2 || result.status === null) {
-    // Actual error or killed — return what we have.
-  }
+  if (result.status !== 0 && result.status !== 1 && status) status.failed = true;
 
   const output = result.stdout?.trim() || "";
-  if (!output) return [];
+  if (!output) { if (status) status.failed = true; return []; }
+
+  try {
+    const parsed = JSON.parse(output) as SemgrepOutput;
+    if (!Array.isArray(parsed.results) || (parsed.errors?.length ?? 0) > 0) {
+      if (status) status.failed = true;
+    }
+  } catch { if (status) status.failed = true; }
 
   return parseSemgrepJson(output);
+}
+
+/** Async variant used by the agent event loop. */
+export async function runSemgrepAnalysisAsync(
+  files: Array<{ path: string; content?: string }>,
+  config: SemgrepConfig = DEFAULT_SEMGREP_CONFIG,
+  status?: { failed: boolean },
+  cwd = process.cwd(),
+): Promise<LintDiagnostic[]> {
+  if (!config.enabled || files.length === 0) return [];
+  const args = buildSemgrepArgs(config, files.map((f) => f.path));
+  return new Promise((done) => {
+    let child: ReturnType<typeof spawn>;
+    try {
+      child = spawn("semgrep", args, { cwd, stdio: ["ignore", "pipe", "pipe"],
+        env: { ...process.env, FORCE_COLOR: "0" } });
+    } catch { if (status) status.failed = true; done([]); return; }
+    const chunks: Buffer[] = [];
+    let size = 0;
+    let timedOut = false;
+    let settled = false;
+    const finish = (failed: boolean, output = "") => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (status && failed) status.failed = true;
+      done(output ? parseSemgrepJson(output) : []);
+    };
+    const timer = setTimeout(() => { timedOut = true; child.kill("SIGKILL"); }, config.timeoutMs ?? DEFAULT_TIMEOUT_MS);
+    child.stdout?.on("data", (chunk: Buffer) => {
+      size += chunk.length;
+      if (size > 10 * 1024 * 1024) { timedOut = true; child.kill("SIGKILL"); }
+      else chunks.push(chunk);
+    });
+    child.stderr?.on("data", () => {});
+    child.on("error", () => finish(true));
+    child.on("close", (code) => {
+      const output = Buffer.concat(chunks).toString("utf8").trim();
+      let valid = false;
+      try { const parsed = JSON.parse(output) as SemgrepOutput;
+        valid = Array.isArray(parsed.results) && (parsed.errors?.length ?? 0) === 0;
+      } catch { /* Invalid or empty output. */ }
+      finish(timedOut || (code !== 0 && code !== 1) || !valid, output);
+    });
+  });
 }
 
 /**
@@ -303,8 +354,9 @@ function mapSemgrepSeverity(
 export function runSemgrepAnalysis(
   files: Array<{ path: string; content?: string }>,
   config: SemgrepConfig = DEFAULT_SEMGREP_CONFIG,
+  status?: { failed: boolean },
 ): LintDiagnostic[] {
   if (!config.enabled) return [];
   const paths = files.map((f) => f.path);
-  return runSemgrep(paths, config);
+  return runSemgrep(paths, config, status);
 }

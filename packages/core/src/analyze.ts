@@ -39,6 +39,7 @@ export async function analyzeChangedFiles(
 	state.preExistingIssues.clear();
 	for (const filePath of state.changedFiles) {
 		if (shouldSkipByPath(filePath)) continue;
+		if (filePath.toLowerCase().endsWith(".lean")) continue; // Beam owns Lean diagnostics.
 		let after: string;
 		try {
 			after = await readFile(filePath);
@@ -91,6 +92,18 @@ export async function analyzeChangedFiles(
 		for (const rec of newRecords) {
 			currentIds.add(rec.id);
 			state.upsertDiagnostic(rec);
+		}
+		// An issue introduced in an earlier turn stays active when a later edit
+		// touches another part of the same file.
+		for (const match of runRulesFromMetrics(filePath, afterMetrics)) {
+			if (!isSuppressed(suppressions, match.line, match.rule) && state.diagnostics.has(match.id)) {
+				currentIds.add(match.id);
+			}
+		}
+		for (const rec of diagnosticsFromAnalysisDelta(filePath, null, afterMetrics, Date.now())) {
+			if (!isSuppressed(suppressions, rec.diagnostic.line, rec.diagnostic.rule) && state.diagnostics.has(rec.id)) {
+				currentIds.add(rec.id);
+			}
 		}
 
 		resolveDisappeared(state, filePath, currentIds);

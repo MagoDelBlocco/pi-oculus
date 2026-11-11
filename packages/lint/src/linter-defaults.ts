@@ -2,17 +2,19 @@
  * Language-aware default linter configurations.
  *
  * Ships a table of sensible defaults for every supported language. At runtime,
- * binaries are probed via spawnSync("sh", ["-c", "which <cmd>"]) and linters
+ * binaries are probed directly on PATH and linters
  * whose binary is not found are silently dropped. The user can override or
  * extend this table via `.pi/oculus.json` in the project root.
  */
 
 import type { LinterConfig } from "./index";
+import { existsSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
+import { spawn } from "node:child_process";
 
 const JS_EXTENSIONS = [".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs"] as const;
 const PRETTIER_EXTENSIONS = [
-	...JS_EXTENSIONS, ".json", ".jsonc", ".md", ".mdx", ".css", ".scss",
-	".html", ".yml", ".yaml",
+	...JS_EXTENSIONS, ".css", ".scss", ".html",
 ] as const;
 
 /**
@@ -27,24 +29,24 @@ export const DEFAULT_LINTERS: LinterConfig[] = [
 	// ── JavaScript / TypeScript ──────────────────────────────
 	{
 		name: "eslint",
-		command: "npx",
-		args: ["eslint", "--format", "json", "--no-config-lookup", "--stdin", "--stdin-filename", "$file"],
+		command: "eslint",
+		args: ["--format", "json", "--stdin", "--stdin-filename", "$file"],
 		parser: "eslint",
 		extensions: JS_EXTENSIONS,
 	},
 	{
 		name: "prettier",
-		command: "npx",
-		args: ["prettier", "--check", "--stdin-filepath", "$file"],
-		parser: "generic",
+		command: "prettier",
+		args: ["--check", "--stdin-filepath", "$file"],
+		parser: "status",
 		extensions: PRETTIER_EXTENSIONS,
 	},
 	{
 		name: "biome",
-		command: "npx",
-		args: ["biome", "check", "--stdin-file-path", "$file"],
+		command: "biome",
+		args: ["check", "--reporter=json", "--stdin-file-path", "$file"],
 		parser: "json",
-		extensions: [...JS_EXTENSIONS, ".json", ".jsonc"],
+		extensions: JS_EXTENSIONS,
 	},
 
 	// ── Python ───────────────────────────────────────────────
@@ -59,7 +61,7 @@ export const DEFAULT_LINTERS: LinterConfig[] = [
 		name: "black",
 		command: "black",
 		args: ["--check", "--diff", "--stdin-filename", "$file", "-"],
-		parser: "generic",
+		parser: "status",
 		extensions: [".py"],
 	},
 
@@ -73,9 +75,9 @@ export const DEFAULT_LINTERS: LinterConfig[] = [
 	},
 	{
 		name: "rustfmt",
-		command: "cargo",
-		args: ["fmt", "--check", "--"],
-		parser: "generic",
+		command: "rustfmt",
+		args: ["--check", "$file"],
+		parser: "status",
 		extensions: [".rs"],
 	},
 
@@ -92,8 +94,8 @@ export const DEFAULT_LINTERS: LinterConfig[] = [
 	{
 		name: "clang-tidy",
 		command: "clang-tidy",
-		args: ["--use-color", "--export-fixes=-", "$file"],
-		parser: "json",
+		args: ["$file"],
+		parser: "generic",
 		extensions: [".cpp", ".cc", ".cxx", ".c", ".h", ".hpp", ".hxx"],
 	},
 
@@ -128,7 +130,7 @@ export const DEFAULT_LINTERS: LinterConfig[] = [
 /**
  * Resolve the effective linters by probing which binaries are available.
  *
- * Spawns `sh -c "which <cmd>"` for each unique command in the configs.
+ * Probes each unique command in the configs without invoking a shell.
  * Linters whose command is not found are silently dropped.
  *
  * @param configs - Linter configs to filter (defaults to DEFAULT_LINTERS)
@@ -136,18 +138,19 @@ export const DEFAULT_LINTERS: LinterConfig[] = [
  */
 export async function resolveAvailableLinters(
 	configs: LinterConfig[] = DEFAULT_LINTERS,
+	cwd = process.cwd(),
 ): Promise<LinterConfig[]> {
 	const commandSet = new Set(configs.map((c) => c.command));
-	const available = await probeBinaries([...commandSet]);
+	const available = await probeBinaries([...commandSet], cwd);
 	return configs.filter((c) => available.has(c.command));
 }
 
 /** Check which commands exist on PATH. */
-async function probeBinaries(commands: string[]): Promise<Set<string>> {
+async function probeBinaries(commands: string[], cwd: string): Promise<Set<string>> {
 	const found = new Set<string>();
 	await Promise.all(
 		commands.map(async (cmd) => {
-			if (await binaryExists(cmd)) {
+			if (await binaryExists(cmd, cwd)) {
 				found.add(cmd);
 			}
 		}),
@@ -156,13 +159,23 @@ async function probeBinaries(commands: string[]): Promise<Set<string>> {
 }
 
 /** Check if a single binary exists on PATH. */
-function binaryExists(cmd: string): Promise<boolean> {
+function binaryExists(cmd: string, cwd: string): Promise<boolean> {
+	if (localBinary(cmd, cwd)) return Promise.resolve(true);
 	return new Promise((resolve) => {
-		const { spawn } = require("node:child_process");
-		const probeCmd = process.platform === "win32" ? "where" : "sh";
-		const probeArgs = process.platform === "win32" ? [cmd] : ["-c", `which ${cmd}`];
-		const child = spawn(probeCmd, probeArgs, { stdio: ["ignore", "ignore", "ignore"] });
+		const probeCmd = process.platform === "win32" ? "where" : "which";
+		const child = spawn(probeCmd, [cmd], { stdio: ["ignore", "ignore", "ignore"] });
 		child.on("close", (code: number) => resolve(code === 0));
 		child.on("error", () => resolve(false));
 	});
+}
+
+export function localBinary(cmd: string, cwd = process.cwd()): string | undefined {
+	let dir = resolve(cwd);
+	while (true) {
+		const candidate = join(dir, "node_modules", ".bin", cmd);
+		if (existsSync(candidate)) return candidate;
+		const parent = dirname(dir);
+		if (parent === dir) return undefined;
+		dir = parent;
+	}
 }

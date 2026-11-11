@@ -1,20 +1,19 @@
 import { describe, it, expect } from "vitest";
 import {
   runTypeChecker,
+  runTypeCheckers,
   runSemanticAnalysis,
   resolveAvailableCheckers,
   DEFAULT_CHECKERS,
 } from "../src/semantic";
+import { parseCargoJson, parseTscOutput } from "../src/semantic/type-checker";
+import { resolve } from "node:path";
 
 describe("type checker integration", () => {
   describe("resolveAvailableCheckers", () => {
     it("returns only checkers with available binaries", () => {
       const available = resolveAvailableCheckers();
-      // npx-based checkers should always be available
-      const npxCheckers = available.filter(
-        (c) => c.command === "npx",
-      );
-      expect(npxCheckers.length).toBeGreaterThanOrEqual(1);
+      expect(available.some((c) => c.name === "tsc")).toBe(true);
     });
 
     it("filters by enabled flag", () => {
@@ -75,6 +74,16 @@ describe("type checker integration", () => {
     });
   });
 
+  it("marks a checker that exits without diagnostics as failed", async () => {
+    const failed = new Set<string>();
+    const file = "/tmp/oculus-checker-failure.ts";
+    await runTypeCheckers([{ path: file }], [{
+      name: "failing-tsc", command: process.execPath, args: ["-e", "process.exit(2)"],
+      format: "tsc", extensions: [".ts"],
+    }], 2000, failed);
+    expect(failed.has(file)).toBe(true);
+  });
+
   describe("runSemanticAnalysis", () => {
     it("returns a Map", async () => {
       const result = await runSemanticAnalysis([]);
@@ -96,6 +105,22 @@ describe("type checker integration", () => {
 });
 
 describe("output parsers", () => {
+	 it("parses the location format emitted by tsc", () => {
+		const file = resolve("src/example.ts");
+		const output = "src/example.ts(2,7): error TS2322: Type 'string' is not assignable to type 'number'.";
+		expect(parseTscOutput(file, output)).toMatchObject([{ filePath: file, line: 2, column: 7, severity: "error" }]);
+		expect(parseTscOutput(resolve("src/other.ts"), output)).toEqual([]);
+	});
+
+	it("parses cargo compiler messages for the requested file", () => {
+		const file = resolve("src/main.rs");
+		const output = JSON.stringify({ reason: "compiler-message", message: {
+			message: "unused variable", level: "warning", code: { code: "unused_variables" },
+			spans: [{ file_name: "src/main.rs", line_start: 4, column_start: 3 }],
+		} });
+		expect(parseCargoJson(file, output)).toMatchObject([{ line: 4, column: 3, message: "unused variable" }]);
+		expect(parseCargoJson(resolve("src/lib.rs"), output)).toEqual([]);
+	});
   // Test the parsers directly by importing them through runTypeChecker
   // Since we can't easily import internal functions, we test through the public API
 

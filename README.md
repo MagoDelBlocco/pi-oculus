@@ -1,7 +1,7 @@
 # oculus
 
 Diagnostic layer for pi. Watches the agent's file edits, runs code-quality
-checks (native C++ engine + external linters) on every changed file, and folds
+checks (native C++ engine + external linters) on every changed code file, and folds
 the results into the next model turn as a structured Markdown report.
 
 ## Architecture at a Glance
@@ -18,6 +18,7 @@ the results into the next model turn as a structured Markdown report.
 │  turn_end       ──►  run linters (parallel)                      │
 │                        run tree-sitter AST rules                 │
 │                        run semantic layer (type checkers+semgrep)│
+│                        sync Lean files via Lean Beam LSP         │
 │                        run autofix pipeline (dry-run)            │
 │                        build Markdown report                     │
 │  context        ──►  inject report as user message to LLM        │
@@ -59,14 +60,14 @@ This stage is fast (microseconds for small files) and runs after every edit.
 
 #### Stage 2: External Linters (`turn_end`)
 
-At the end of each agent turn, queued files are linted in parallel by
-eslint, prettier, and biome. Each linter:
+At the end of each agent turn, queued files are linted by available tools,
+with at most four linter processes running at once. Each linter:
 
 1. Receives file content via stdin
-2. Output is parsed by a format-specific parser (eslint JSON, generic JSON, or line-based text)
+2. Output is parsed by a format-specific parser (JSON, line-based text, or formatting status)
 3. Diagnostics are filtered through the diff-awareness layer (only lines the model touched)
 4. Suppression directives (`// oculus-disable-next-line`) are honored
-5. Results are stored in `state.lintResults` and new diagnostics upserted
+5. Results are stored in `state.lintResults` and new diagnostics upserted; tool failures produce a warning
 
 Linting is batched at `turn_end` rather than per-edit because spawning
 eslint/prettier/biome per tool call is too slow for tight agent loops.
@@ -82,13 +83,31 @@ failing the turn. Diagnostics carry `source: "oculus-ast"`.
 
 #### Stage 2.75: Semantic Layer (`turn_end`, after AST)
 
-The slowest layer. For each changed file it runs the available type checkers
+The slowest layer. It runs the available type checkers
 (`tsc`, `mypy`, `cargo check`, `pyright`) **and** semgrep, merging both into a
 per-file diagnostic set via `runSemanticDiagnostics()`. Each tool is probed for
 availability first, so missing binaries are skipped silently — semgrep, in
 particular, no-ops cleanly when it isn't installed. Diagnostics are normalized
 to `source: "oculus-semantic"` (the originating tool stays visible in the rule
 id, e.g. `tsc/error`, `semgrep/...`).
+
+TypeScript checks use a locally available `tsc` binary and the nearest
+`tsconfig.json`, checking each project once per batch. Type checker processes
+are bounded to three concurrent invocations; `cargo check` also runs once per
+Cargo project. The
+default linter commands likewise use installed binaries directly, so a missing
+checker is skipped without `npx` downloading it during a turn.
+
+#### Stage 2.8: Lean Beam (`turn_end`, after semantic checks)
+
+For saved `.lean` files, Oculus calls Beam's
+`lean_sync` MCP tool with `diagnostics_in_result: true`. Beam keeps the Lean LSP
+workspace context and returns the current errors and warnings as structured
+diagnostics. Files in the same Lean project share one Beam process per batch.
+This requires `lean-beam-mcp` on `PATH`. Oculus uses a Lean/Lake manifest when
+present and otherwise uses the active workspace as Beam's root. When Beam
+cannot check a file, Oculus reports a warning with the reason. Lean files are handled
+by Beam rather than the generic native pattern scanner.
 
 #### Stage 3: Autofix Pipeline (`turn_end`, after the semantic layer)
 
@@ -107,6 +126,9 @@ automatically; the model decides whether to accept it.
 
 Before each LLM call, the engine builds a Markdown report from all accumulated
 diagnostics and injects it as a `<oculus-report>` user message. The report contains:
+
+Messages, snippets, and paths from source files or tools are JSON-quoted in the
+report and labeled as data. They cannot create new report lines or directives.
 
 - **Active issues** grouped by file, sorted by priority score
 - **Resolved this cycle** — issues the model fixed in the previous turn
@@ -217,7 +239,7 @@ interface LinterConfig {
   name: string;                    // Display name (e.g. "rustfmt")
   command: string;                 // Executable (e.g. "cargo")
   args: readonly string[];         // Arguments with $file placeholder
-  parser: "eslint" | "json" | "generic";
+  parser: "eslint" | "json" | "generic" | "status";
   enabled?: boolean;               // false to disable without removing
   extensions?: readonly string[];  // File extensions to process (e.g. [".rs"])
 }
@@ -515,6 +537,10 @@ Files are skipped from analysis when:
 
 - **Path matches skip patterns**: lockfiles, minified bundles, source maps
   (`package-lock.json`, `yarn.lock`, `*.min.js`, `*.map`, etc.)
+- **Path is not code**: Markdown, MDX, plain text, JSON, YAML, TOML, and
+  other unlisted data or prose formats are excluded. The code extension
+  allowlist lives in `packages/core/src/guard.ts`; known extensionless code
+  files such as `Dockerfile` and `Makefile` are included.
 - **Content exceeds 256KB**: defined by `MAX_ANALYSIS_BYTES` in `packages/core/src/guard.ts`
 - **Content contains NUL bytes**: binary detection in first 8KB
 
@@ -635,7 +661,7 @@ the status call is skipped.
 
 ## Rule Layers
 
-Oculus detects issues through four complementary layers, each owning a distinct
+Oculus detects issues through five complementary layers, each owning a distinct
 `source` so resolution never crosses wires:
 
 | Layer | When | Source | What it finds |
@@ -644,6 +670,7 @@ Oculus detects issues through four complementary layers, each owning a distinct
 | External linters | `turn_end` | `eslint` / `prettier` / `biome` | style + correctness from configured linters |
 | Tree-sitter AST | `turn_end` | `oculus-ast` | structural rules (unused imports, deep nesting, dangerous APIs, magic numbers, long params) |
 | Semantic | `turn_end` | `oculus-semantic` | type checkers (tsc/mypy/cargo/pyright) + semgrep |
+| Lean Beam | `turn_end` | `oculus-lean` | Lean LSP diagnostics for `.lean` files |
 
 The AST and semantic layers are best-effort: they probe for the required
 tooling (tree-sitter binding, `tsc`, `semgrep`, …) and degrade to a no-op when

@@ -12,21 +12,14 @@ import { analyzeFile } from "../../native/src/native-bridge";
 import { runRulesFromMetrics } from "../../rules/src/index";
 import { runBuiltInAstRules } from "../../rules/src/tree-sitter";
 import { runSemanticDiagnostics } from "../../rules/src/semantic";
+import { runLeanBeamBatch, leanFailureDiagnostic } from "../../rules/src/semantic/lean-beam";
 import type { RuleMatch } from "../../rules/src/types";
 import { LinterRunner, type LintResult } from "../../lint/src/index";
 import { shouldSkipByPath, shouldSkipAnalysis, isTmpPath } from "./guard";
 
 const SKIP_DIRS = new Set([
 	"node_modules", ".git", ".pi", ".next", ".nuxt", ".cache",
-	"dist", "build", "coverage", ".vscode", ".idea",
-]);
-
-const SOURCE_EXTS = new Set([
-	".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".py", ".rs", ".go",
-	".java", ".cpp", ".cc", ".cxx", ".c", ".h", ".hpp", ".rb", ".php",
-	".cs", ".swift", ".kt", ".scala", ".sh", ".bash", ".zsh", ".css",
-	".scss", ".less", ".json", ".jsonc", ".yaml", ".yml", ".toml",
-	".md", ".mdx", ".html", ".vue", ".svelte", ".lean",
+	"dist", "build", ".build", ".lake", "coverage", ".vscode", ".idea",
 ]);
 
 /** Result of analyzing one file. */
@@ -44,6 +37,8 @@ export interface CwdAnalysis {
 	totalRules: number;
 	totalLints: number;
 	durationMs: number;
+	/** True when the source-file limit excluded additional files. */
+	truncated: boolean;
 }
 
 /** Recursively collect source files from a directory. */
@@ -69,9 +64,8 @@ function walk(dir: string, acc: string[], max: number): void {
 	}
 }
 
-function isSource(name: string, path: string): boolean {
-	if (shouldSkipByPath(path)) return false;
-	return SOURCE_EXTS.has(extname(name).toLowerCase());
+function isSource(_name: string, path: string): boolean {
+	return !shouldSkipByPath(path);
 }
 
 /** Analyze all source files in the given directory. */
@@ -80,12 +74,28 @@ export async function analyzeCwd(
 	maxFiles = 500,
 ): Promise<CwdAnalysis> {
 	const start = performance.now();
-	const files = collectSourceFiles(cwd, maxFiles);
+	const discovered = collectSourceFiles(cwd, maxFiles + 1);
+	const truncated = discovered.length > maxFiles;
+	const files = discovered.slice(0, maxFiles);
 	const results = await phaseNative(files);
 	phaseAst(results);
-	await phaseSemantic(results);
-	await phaseLint(results);
-	return summarize(results, start);
+	await phaseSemantic(results, cwd);
+	await phaseLean(results, cwd);
+	await phaseLint(results, cwd);
+	return summarize(results, start, truncated);
+}
+
+async function phaseLean(results: FileAnalysis[], cwd: string): Promise<void> {
+	const files = results.filter((r) => !r.error && r.filePath.toLowerCase().endsWith(".lean")).map((r) => r.filePath);
+	const checkedByFile = await runLeanBeamBatch(files, 60_000, undefined, cwd);
+	for (const result of results) {
+		if (result.error || !result.filePath.toLowerCase().endsWith(".lean")) continue;
+		const checked = checkedByFile.get(result.filePath);
+		if (!checked) continue;
+		result.lints.push({ filePath: result.filePath, linter: "lean-beam",
+			diagnostics: checked.checked ? checked.diagnostics : checked.error ? [leanFailureDiagnostic(result.filePath, checked.error)] : [],
+			output: "", durationMs: 0, error: checked.error });
+	}
 }
 
 /** Phase 1: native analysis (sequential). */
@@ -98,6 +108,10 @@ async function phaseNative(files: string[]): Promise<FileAnalysis[]> {
 			continue;
 		}
 		if (shouldSkipAnalysis(content)) continue;
+		if (fp.toLowerCase().endsWith(".lean")) {
+			out.push({ filePath: fp, rules: [], lints: [] });
+			continue;
+		}
 		const m = safeAnalyze(content, fp, out);
 		if (m) out.push({ filePath: fp, rules: runRulesFromMetrics(fp, m), lints: [] });
 	}
@@ -123,7 +137,7 @@ function phaseAst(results: FileAnalysis[]): void {
 }
 
 /** Phase 1.75: Semantic analysis (type checkers + semgrep). */
-async function phaseSemantic(results: FileAnalysis[]): Promise<void> {
+async function phaseSemantic(results: FileAnalysis[], cwd: string): Promise<void> {
   const candidates = results
     .filter((r) => !r.error)
     .map((r) => ({ path: r.filePath, content: readSafe(r.filePath) ?? "" }))
@@ -131,7 +145,7 @@ async function phaseSemantic(results: FileAnalysis[]): Promise<void> {
   if (candidates.length === 0) return;
 
   try {
-    const semanticResults = await runSemanticDiagnostics(candidates);
+    const semanticResults = await runSemanticDiagnostics(candidates, { cwd });
     for (const r of results) {
       const diags = semanticResults.get(r.filePath);
       if (diags && diags.length > 0) {
@@ -153,28 +167,29 @@ async function phaseSemantic(results: FileAnalysis[]): Promise<void> {
 }
 
 /** Phase 2: linting (parallel). */
-async function phaseLint(results: FileAnalysis[]): Promise<void> {
+async function phaseLint(results: FileAnalysis[], cwd: string): Promise<void> {
 	const candidates = results
 		.filter((r) => !r.error)
 		.map((r) => ({ filePath: r.filePath, content: readSafe(r.filePath) ?? "" }))
 		.filter((f) => !shouldSkipAnalysis(f.content));
 	if (candidates.length === 0) return;
-	const runner = await LinterRunner.create();
+	const runner = await LinterRunner.create(cwd);
 	const map = await runner.lintFiles(candidates);
 	for (const r of results) {
 		const lints = map.get(r.filePath);
-		if (lints) r.lints = lints;
+		if (lints) r.lints.push(...lints);
 	}
 }
 
 /** Build the summary struct. */
-function summarize(results: FileAnalysis[], start: number): CwdAnalysis {
+function summarize(results: FileAnalysis[], start: number, truncated: boolean): CwdAnalysis {
 	return {
 		files: results,
 		totalFiles: results.length,
 		totalRules: sum(results, (r) => r.rules.length),
 		totalLints: sum(results, (r) => r.lints.flatMap((l) => l.diagnostics).length),
 		durationMs: Math.round(performance.now() - start),
+		truncated,
 	};
 }
 
@@ -226,6 +241,7 @@ export function formatCwdReport(a: CwdAnalysis): string {
 		`Scanned ${a.totalFiles} file(s) in ${a.durationMs}ms. ` +
 		`Found ${a.totalRules} rule match(es) and ${a.totalLints} lint diagnostic(s).`,
 	);
+	if (a.truncated) lines.push("Scan limit reached; additional source files were not checked.");
 	lines.push("");
 	const groups: Record<SeverityBucket, FileAnalysis[]> = { error: [], warning: [], info: [], clean: [] };
 	for (const f of a.files) groups[highestSeverity(f)].push(f);
